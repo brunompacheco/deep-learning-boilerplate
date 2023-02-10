@@ -323,6 +323,7 @@ class Trainer(ABC):
 
     def train_pass(self):
         train_loss = 0
+        train_size = 0
 
         forward_time = 0
         loss_time = 0
@@ -353,12 +354,13 @@ class Trainer(ABC):
                 backward_time += backward_time_
 
                 train_loss += loss.item() * len(y)
+                train_size += len(y)
 
             if self.lr_scheduler is not None:
                 self._scheduler.step()
 
         # scale to data size
-        train_loss = train_loss / len(self.data)
+        train_loss = train_loss / train_size
 
         losses = {
             'all': train_loss,
@@ -373,6 +375,7 @@ class Trainer(ABC):
 
     def validation_pass(self):
         val_loss = 0
+        val_size = 0
 
         forward_time = 0
         loss_time = 0
@@ -391,10 +394,10 @@ class Trainer(ABC):
                     loss_time += loss_time_
 
                 val_loss += loss.item() * len(y)  # scales to data size
+                val_size += len(y)
 
         # scale to data size
-        len_data = len(self.val_data)
-        val_loss = val_loss / len_data
+        val_loss = val_loss / val_size
         losses = {
             'all': val_loss
         }
