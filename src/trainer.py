@@ -341,7 +341,7 @@ class Trainer(ABC):
                     forward_time_, y_hat = timeit(self.net)(X)
                     forward_time += forward_time_
 
-                    loss_time_, loss = timeit(self._loss_func)(y_hat, y)
+                    loss_time_, loss = self.get_loss_and_metrics(y_hat, y)
                     loss_time += loss_time_
 
                 if self.mixed_precision:
@@ -359,12 +359,7 @@ class Trainer(ABC):
             if self.lr_scheduler is not None:
                 self._scheduler.step()
 
-        # scale to data size
-        train_loss = train_loss / train_size
-
-        losses = {
-            'all': train_loss,
-        }
+        losses = self.aggregate_loss_and_metrics(train_loss, train_size)
         times = {
             'forward': forward_time,
             'loss': loss_time,
@@ -372,10 +367,32 @@ class Trainer(ABC):
         }
 
         return losses, times
+    
+    def get_loss_and_metrics(self, y_hat, y, validation=False):
+        loss_time, loss =  timeit(self._loss_func)(y_hat, y)
+
+        if validation:
+            # here you can compute performance metrics
+            return loss_time, loss, None
+        else:
+            return loss_time, loss
+    
+    def aggregate_loss_and_metrics(self, loss, size, metrics=None):
+        # scale to data size
+        loss = loss / size
+
+        losses = {
+            'all': loss
+            # here you can aggregate metrics computed on the validation set and
+            # track them on wandb
+        }
+
+        return losses
 
     def validation_pass(self):
         val_loss = 0
         val_size = 0
+        val_metrics = list()
 
         forward_time = 0
         loss_time = 0
@@ -390,17 +407,15 @@ class Trainer(ABC):
                     forward_time_, y_hat = timeit(self.net)(X)
                     forward_time += forward_time_
 
-                    loss_time_, loss = timeit(self._loss_func)(y_hat, y)
+                    loss_time_, loss, metrics = self.get_loss_and_metrics(y_hat, y, validation=True)
                     loss_time += loss_time_
+
+                    val_metrics.append(metrics)
 
                 val_loss += loss.item() * len(y)  # scales to data size
                 val_size += len(y)
 
-        # scale to data size
-        val_loss = val_loss / val_size
-        losses = {
-            'all': val_loss
-        }
+        losses = self.aggregate_loss_and_metrics(val_loss, val_size, val_metrics)
         times = {
             'forward': forward_time,
             'loss': loss_time,
