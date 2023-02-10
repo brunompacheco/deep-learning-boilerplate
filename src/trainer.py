@@ -349,7 +349,7 @@ class Trainer(ABC):
                     self._scaler.step(self._optim)
                     self._scaler.update()
                 else:
-                    backward_time_, _  = timeit(loss.backwad)()
+                    backward_time_, _  = timeit(loss.backward)()
                     self._optim.step()
                 backward_time += backward_time_
 
