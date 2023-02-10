@@ -188,3 +188,6 @@ wandb/
 
 # vscode stuff
 .vscode/
+
+# ignore data
+# data/
