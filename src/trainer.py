@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 import wandb
 from torch.cuda.amp import GradScaler, autocast
+from torch.utils.data import Dataset, DataLoader
 
 from src.utils import timeit
 
@@ -32,13 +33,13 @@ class Trainer(ABC):
         random_seed: if not None (default = 42), fixes randomness for Python,
         NumPy as PyTorch (makes trainig reproducible).
     """
-    def __init__(self, net: nn.Module, epochs=5, lr= 0.1,
-                 optimizer: str = 'Adam', optimizer_params: dict = None,
-                 loss_func: str = 'MSELoss', lr_scheduler: str = None,
-                 lr_scheduler_params: dict = None, mixed_precision=True,
-                 device=None, wandb_project=None, wandb_group=None,
-                 logger=None, checkpoint_every=50, random_seed=42,
-                 max_loss=None) -> None:
+    def __init__(self, net: nn.Module, dataset: Dataset, epochs=5, lr= 0.1,
+                 batch_size=2**4, optimizer: str = 'Adam',
+                 optimizer_params: dict = None, loss_func: str = 'MSELoss',
+                 lr_scheduler: str = None, lr_scheduler_params: dict = None,
+                 mixed_precision=True, device=None, wandb_project=None,
+                 wandb_group=None, logger=None, checkpoint_every=50,
+                 random_seed=42, max_loss=None) -> None:
         self._is_initalized = False
 
         if device is None:
@@ -52,8 +53,10 @@ class Trainer(ABC):
 
         self.epochs = epochs
         self.lr = lr
+        self.batch_size = batch_size
 
         self.net = net.to(self.device)
+        self.dataset = dataset
         self.optimizer = optimizer
         self.optimizer_params = optimizer_params
         self.loss_func = loss_func
@@ -162,7 +165,7 @@ class Trainer(ABC):
         else:
             self.autocast_if_mp = nullcontext
 
-        self.prepare_data()
+        self.train_data, self.val_data = self.prepare_data()
 
         self._is_initalized = True
 
@@ -207,7 +210,7 @@ class Trainer(ABC):
             self.autocast_if_mp = nullcontext
 
         self.l.info('Preparing data')
-        self.prepare_data()
+        self.train_data, self.val_data = self.prepare_data()
 
         self._is_initalized = True
 
@@ -232,12 +235,23 @@ class Trainer(ABC):
 
         self.l.info(f"Wandb set up. Run ID: {self._id}")
 
-    @abstractmethod
     def prepare_data(self):
-        """Must populate `self.data` and `self.val_data`.
+        """Splits dataset into training and validation data. Instantiate loaders.
         """
-        # TODO: maybe I should refactor this so that the Dataset is an input to
-        # the Trainer?
+        generator = torch.Generator().manual_seed(33)
+
+        train_size = int(0.8 * len(self.dataset))
+        val_size = len(self.dataset) - train_size
+        train_data, val_data = torch.utils.data.random_split(
+            self.dataset,
+            (train_size, val_size),
+            generator=generator
+        )
+
+        train_loader = DataLoader(train_data, self.batch_size, shuffle=True)
+        val_loader = DataLoader(val_data, self.batch_size, shuffle=False)
+
+        return train_loader, val_loader
 
     @staticmethod
     def _add_data_to_log(data: dict, prefix: str, data_to_log=dict()):
@@ -321,61 +335,27 @@ class Trainer(ABC):
 
         return self.net
 
-    def train_pass(self):
-        train_loss = 0
-        train_size = 0
+    def optim_step(self, loss):
+        if self.mixed_precision:
+            backward_time, _  = timeit(self._scaler.scale(loss).backward)()
+            self._scaler.step(self._optim)
+            self._scaler.update()
+        else:
+            backward_time, _  = timeit(loss.backward)()
+            self._optim.step()
 
-        forward_time = 0
-        loss_time = 0
-        backward_time = 0
-
-        self.net.train()
-        with torch.set_grad_enabled(True):
-            for X, y in self.data:
-                X = X.to(self.device)
-                y = y.to(self.device)
-
-                self._optim.zero_grad()
-
-                with self.autocast_if_mp():
-                    forward_time_, y_hat = timeit(self.net)(X)
-                    forward_time += forward_time_
-
-                    loss_time_, loss = self.get_loss_and_metrics(y_hat, y)
-                    loss_time += loss_time_
-
-                if self.mixed_precision:
-                    backward_time_, _  = timeit(self._scaler.scale(loss).backward)()
-                    self._scaler.step(self._optim)
-                    self._scaler.update()
-                else:
-                    backward_time_, _  = timeit(loss.backward)()
-                    self._optim.step()
-                backward_time += backward_time_
-
-                train_loss += loss.item() * len(y)
-                train_size += len(y)
-
-            if self.lr_scheduler is not None:
-                self._scheduler.step()
-
-        losses = self.aggregate_loss_and_metrics(train_loss, train_size)
-        times = {
-            'forward': forward_time,
-            'loss': loss_time,
-            'backward': backward_time,
-        }
-
-        return losses, times
+        self._optim.zero_grad()
+        return backward_time
     
     def get_loss_and_metrics(self, y_hat, y, validation=False):
-        loss_time, loss =  timeit(self._loss_func)(y_hat, y)
+        loss_time, loss =  timeit(self._loss_func)(y_hat.view_as(y), y)
 
+        metrics = None
         if validation:
-            # here you can compute performance metrics
-            return loss_time, loss, None
-        else:
-            return loss_time, loss
+            # here you can compute performance metrics (populate `metrics`)
+            pass
+
+        return loss_time, loss, metrics
     
     def aggregate_loss_and_metrics(self, loss, size, metrics=None):
         # scale to data size
@@ -389,39 +369,57 @@ class Trainer(ABC):
 
         return losses
 
-    def validation_pass(self):
-        val_loss = 0
-        val_size = 0
-        val_metrics = list()
+    def data_pass(self, data, train=False):
+        loss = 0
+        size = 0
+        metrics = list()
 
         forward_time = 0
         loss_time = 0
+        backward_time = 0
 
-        self.net.eval()
-        with torch.set_grad_enabled(False):
-            for X, y in self.val_data:
+        self.net.train()
+        with torch.set_grad_enabled(train):
+            for X, y in data:
                 X = X.to(self.device)
                 y = y.to(self.device)
 
                 with self.autocast_if_mp():
-                    forward_time_, y_hat = timeit(self.net)(X)
-                    forward_time += forward_time_
+                    batch_forward_time, y_hat = timeit(self.net)(X)
+                    forward_time += batch_forward_time
 
-                    loss_time_, loss, metrics = self.get_loss_and_metrics(y_hat, y, validation=True)
-                    loss_time += loss_time_
+                    batch_loss_time, batch_loss, batch_metrics = self.get_loss_and_metrics(y_hat, y, validation=not train)
+                loss_time += batch_loss_time
 
-                    val_metrics.append(metrics)
+                metrics.append(batch_metrics)
 
-                val_loss += loss.item() * len(y)  # scales to data size
-                val_size += len(y)
+                if train:
+                    batch_backward_time = self.optim_step(batch_loss)
+                    backward_time += batch_backward_time
 
-        losses = self.aggregate_loss_and_metrics(val_loss, val_size, val_metrics)
+                loss += batch_loss.item() * len(y)
+                size += len(y)
+
+            if self.lr_scheduler is not None:
+                self._scheduler.step()
+
+        if all([b_m is None for b_m in metrics]):
+            metrics = None
+
+        losses = self.aggregate_loss_and_metrics(loss, size, metrics)
         times = {
             'forward': forward_time,
             'loss': loss_time,
+            'backward': backward_time,
         }
 
         return losses, times
+
+    def train_pass(self):
+        return self.data_pass(self.train_data, train=True)
+
+    def validation_pass(self):
+        return self.data_pass(self.val_data, train=False)
 
     def save_checkpoint(self):
         checkpoint = {

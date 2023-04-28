@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-import torch.nn
+from src.dataset import MyDataset
 
 from src.net import Network
 from src.trainer import Trainer
@@ -27,6 +27,7 @@ if __name__ == '__main__':
 
     Trainer(
         Network(),
+        MyDataset(),
         wandb_project=wandb_project,
         random_seed=seed,
         device=device,
