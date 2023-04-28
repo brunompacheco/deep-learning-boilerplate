@@ -387,7 +387,6 @@ class Trainer(ABC):
         loss_time = 0
         backward_time = 0
 
-        self.net.train()
         with torch.set_grad_enabled(train):
             for X, y in data:
                 X = X.to(self.device)
@@ -425,9 +424,11 @@ class Trainer(ABC):
         return losses, times
 
     def train_pass(self):
+        self.net.train()
         return self.data_pass(self.train_data, train=True)
 
     def validation_pass(self):
+        self.net.eval()
         return self.data_pass(self.val_data, train=False)
 
     def save_checkpoint(self):
