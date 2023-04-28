@@ -26,14 +26,14 @@ class DummyDataset(Dataset):
 
 class DummyTrainer(Trainer):
     def __init__(self, net: nn.Module, dataset: Dataset, epochs=5, lr=0.01,
-                 batch_size=2 ** 4, optimizer: str = 'Adam',
-                 optimizer_params: dict = None, loss_func: str = 'BCEWithLogitsLoss',
-                 lr_scheduler: str = None, lr_scheduler_params: dict = None,
-                 mixed_precision=True, device=None, wandb_project=None,
-                 wandb_group=None, logger=None, checkpoint_every=50,
-                 random_seed=42, max_loss=None) -> None:
+                 batch_size=2**4, optimizer: str = 'Adam',
+                 optimizer_params=dict(), loss_func: str = 'BCEWithLogitsLoss',
+                 loss_func_params=dict(), lr_scheduler: str = None,
+                 lr_scheduler_params=dict(), mixed_precision=True,
+                 device=None, wandb_project=None, wandb_group=None, logger=None,
+                 checkpoint_every=50, random_seed=42, max_loss=None) -> None:
         super().__init__(net, dataset, epochs, lr, batch_size, optimizer,
-                         optimizer_params, loss_func, lr_scheduler,
+                         optimizer_params, loss_func, loss_func_params, lr_scheduler,
                          lr_scheduler_params, mixed_precision, device,
                          wandb_project, wandb_group, logger, checkpoint_every,
                          random_seed, max_loss)

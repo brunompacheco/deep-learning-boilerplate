@@ -35,11 +35,11 @@ class Trainer(ABC):
     """
     def __init__(self, net: nn.Module, dataset: Dataset, epochs=5, lr= 0.1,
                  batch_size=2**4, optimizer: str = 'Adam',
-                 optimizer_params: dict = None, loss_func: str = 'MSELoss',
-                 lr_scheduler: str = None, lr_scheduler_params: dict = None,
-                 mixed_precision=True, device=None, wandb_project=None,
-                 wandb_group=None, logger=None, checkpoint_every=50,
-                 random_seed=42, max_loss=None) -> None:
+                 optimizer_params=dict(), loss_func: str = 'MSELoss',
+                 loss_func_params=dict(), lr_scheduler: str = None,
+                 lr_scheduler_params=dict(), mixed_precision=True,
+                 device=None, wandb_project=None, wandb_group=None, logger=None,
+                 checkpoint_every=50, random_seed=42, max_loss=None) -> None:
         self._is_initalized = False
 
         if device is None:
@@ -60,6 +60,7 @@ class Trainer(ABC):
         self.optimizer = optimizer
         self.optimizer_params = optimizer_params
         self.loss_func = loss_func
+        self.loss_func_params = loss_func_params
         self.lr_scheduler = lr_scheduler
         self.lr_scheduler_params = lr_scheduler_params
 
@@ -88,6 +89,27 @@ class Trainer(ABC):
         self.wandb_group = wandb_group
 
         self.max_loss = max_loss
+
+    def _load_optim(self, state_dict=None):
+        Optimizer = eval(f"torch.optim.{self.optimizer}")
+        self._optim = Optimizer(
+            filter(lambda p: p.requires_grad, self.net.parameters()),
+            lr=self.lr,
+            **self.optimizer_params
+        )
+        if state_dict is not None:
+            self._optim.load_state_dict(state_dict)
+    
+    def _load_lr_scheduler(self, state_dict=None):
+        Scheduler = eval(f"torch.optim.lr_scheduler.{self.lr_scheduler}")
+        self._scheduler = Scheduler(self._optim, **self.lr_scheduler_params)
+
+        if state_dict is not None:
+            self._scheduler.load_state_dict(state_dict)
+
+    def _load_loss_func(self):
+        LossClass = eval(f"nn.{self.loss_func}")
+        self._loss_func = LossClass(**self.loss_func_params)
 
     @classmethod
     def load_trainer(cls, net: nn.Module, run_id: str, wandb_project=None,
@@ -143,21 +165,13 @@ class Trainer(ABC):
         self.l.info(f'Resuming training of {wandb.run.name} at epoch {self._e}')
 
         # load optimizer
-        Optimizer = eval(f"torch.optim.{self.optimizer}")
-        self._optim = Optimizer(
-            filter(lambda p: p.requires_grad, self.net.parameters()),
-            lr=self.lr,
-            **self.optimizer_params
-        )
-        self._optim.load_state_dict(checkpoint['optimizer_state_dict'])
+        self._load_optim(checkpoint['optimizer_state_dict'])
 
         # load scheduler
         if self.lr_scheduler is not None:
-            Scheduler = eval(f"torch.optim.lr_scheduler.{self.lr_scheduler}")
-            self._scheduler = Scheduler(self._optim, **self.lr_scheduler_params)
-            self._scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            self._load_lr_scheduler(state_dict=checkpoint['scheduler_state_dict'])
 
-        self._loss_func = eval(f"nn.{self.loss_func}()")
+        self._load_loss_func(self)
 
         if self.mixed_precision:
             self._scaler = GradScaler()
@@ -174,15 +188,10 @@ class Trainer(ABC):
     def setup_training(self):
         self.l.info('Setting up training')
 
-        Optimizer = eval(f"torch.optim.{self.optimizer}")
-        self._optim = Optimizer(
-            filter(lambda p: p.requires_grad, self.net.parameters()),
-            lr=self.lr
-        )
+        self._load_optim(state_dict=None)
 
         if self.lr_scheduler is not None:
-            Scheduler = eval(f"torch.optim.lr_scheduler.{self.lr_scheduler}")
-            self._scheduler = Scheduler(self._optim, **self.lr_scheduler_params)
+            self._load_lr_scheduler(state_dict=None)
 
         if self._log_to_wandb:
             self._add_to_wandb_config({
@@ -201,7 +210,7 @@ class Trainer(ABC):
             self.l.info('Initializing wandb.')
             self.initialize_wandb()
 
-        self._loss_func = eval(f"nn.{self.loss_func}()")
+        self._load_loss_func()
 
         if self.mixed_precision:
             self._scaler = GradScaler()
